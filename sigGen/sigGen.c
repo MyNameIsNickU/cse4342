@@ -217,7 +217,7 @@ uint16_t output2RValue(DAC select, float voltage)
   *  ====================================== */
 #define LUT_SIZE 2048
 
-void calculateWave(WAVE type, uint16_t addr[], DAC select)
+void calculateWave(WAVE type, uint16_t addr[], DAC select, uint32_t phase)
 {
 	uint8_t i;
 	
@@ -225,7 +225,7 @@ void calculateWave(WAVE type, uint16_t addr[], DAC select)
 	{
 	case DAC_A:
 		for(i = 0; i < LUT_SIZE; i++)
-			addr[i] = output2RValue(DAC_A, sin(1));
+			addr[i] = output2RValue(DAC_A, sin(phase));
 		break;
 	case DAC_B:
 		break;
@@ -258,6 +258,7 @@ int main(void)
     char buffer[MAX_CHARS + 1];
 	
 	uint16_t lutA[LUT_SIZE] = {0};
+	uint32_t phaseAccum = 0;
 
     // Start of Shell
     while( 1 )
