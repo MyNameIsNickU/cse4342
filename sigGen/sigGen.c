@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "tm4c123gh6pm.h"
 #include "clock.h"
 #include "gpio.h"
@@ -24,6 +25,14 @@ typedef enum _DAC
     DAC_B = 2
 } DAC;
 
+typedef enum _WAVE
+{
+	  SINE = 1,
+	SQUARE = 2,
+	   SAW = 3,
+	   TRI = 4
+} WAVE;
+
 // Pins
 #define RED_LED PORTF,1
 #define BLUE_LED PORTF,2
@@ -34,9 +43,10 @@ typedef enum _DAC
 // MCP2844
 #define OUTPUT_SELECT 32768
 
-/*  ==================== *
- *  O U T P U T  C A L B *
- *  ==================== */
+/*  ========================== *
+ *   C A L B I B R A T I O N   *
+ *  ========================== */
+
 // DAC Calibration Values
 #define DAC_SLOPE_A 0.0005
 #define DAC_OFFSET_A 0.0013
@@ -52,18 +62,17 @@ typedef enum _DAC
 #define OUT_OFFSET_A -4.606
 
 #define OUT_SLOPE_B 4.5
-#define OUT_OFFSET_B -4.6
+#define OUT_OFFSET_B -4.604
 
 
 // ||||| D E B U G   D E F I N E |||||
-#define DEBUG
+//#define DEBUG
 
 void initHw()
 {
     initSystemClockTo40Mhz();
 
     enablePort(PORTF);
-    _delay_cycles(3);
 
 	// Spi1 for communicating with SPI DAC
 	// Uses pins D0-D1 and D3 (SPI RX ununsed)
@@ -94,7 +103,7 @@ void initHw()
 void latchDAC()
 {
     setPinValue(SPI_LDAC, 0);
-    _delay_cycles(2); // 250 ns wait
+    _delay_cycles(4); // 25 ns wait each, total 100 ns wait
     setPinValue(SPI_LDAC, 1);
 }
 
@@ -158,17 +167,15 @@ bool selectOutputVoltage(DAC select, float voltage)
     switch(select)
     {
     case DAC_A:
-		if( voltage >= 0 && voltage <= OUT_OFFSET_A )
-			voltage = OUT_OFFSET_A;
-		dacVoltage = (dacVoltage - OUT_OFFSET_A) / OUT_SLOPE_A;
+		dacVoltage = (voltage - OUT_OFFSET_A) / OUT_SLOPE_A;
 		wrote2Spi = selectDACVoltage(DAC_A, dacVoltage);
         break;
+		
     case DAC_B:
-		if( voltage >= 0 && voltage <= OUT_OFFSET_B )
-			voltage = OUT_OFFSET_B;
-		dacVoltage = (dacVoltage - OUT_OFFSET_B) / OUT_SLOPE_B;
+		dacVoltage = (voltage - OUT_OFFSET_B) / OUT_SLOPE_B;
 		wrote2Spi = selectDACVoltage(DAC_B, dacVoltage);
         break;
+		
     default:
 		putsUart0("ERROR: Invalid DAC Selection for Output Voltage.\n");
         break;
@@ -182,6 +189,51 @@ bool selectOutputVoltage(DAC select, float voltage)
 
 	return wrote2Spi;
 }
+
+uint16_t output2RValue(DAC select, float voltage)
+{
+	float dacVoltage = 0;
+	uint16_t r_value = 0;
+	
+	switch(select)
+	{
+	case DAC_A:
+		dacVoltage = (voltage - OUT_OFFSET_A) / OUT_SLOPE_A;
+		r_value = (dacVoltage - DAC_OFFSET_A) / DAC_SLOPE_A;
+		break;
+	case DAC_B:
+		dacVoltage = (voltage - OUT_OFFSET_B) / OUT_SLOPE_B;
+		r_value = (dacVoltage - DAC_OFFSET_B) / DAC_SLOPE_B;
+		break;
+	default:
+		break;
+	}
+	
+	return r_value;
+}
+
+ /* ======================================= *
+  *              LUT PROCESSING             *
+  *  ====================================== */
+#define LUT_SIZE 2048
+
+void calculateWave(WAVE type, uint16_t addr[], DAC select)
+{
+	uint8_t i;
+	
+	switch(select)
+	{
+	case DAC_A:
+		for(i = 0; i < LUT_SIZE; i++)
+			addr[i] = output2RValue(DAC_A, sin(1));
+		break;
+	case DAC_B:
+		break;
+	}
+	
+}
+
+
  /* ======================================= *
   *             SHELL PROCESSING            *
   *  ====================================== */
@@ -204,6 +256,8 @@ int main(void)
     // Command Line Processing Info
     USER_DATA data;
     char buffer[MAX_CHARS + 1];
+	
+	uint16_t lutA[LUT_SIZE] = {0};
 
     // Start of Shell
     while( 1 )
@@ -248,16 +302,26 @@ int main(void)
             voltage = getFieldFloat(&data, 2);
 			if(voltage == -1)
 				voltage = (float)getFieldInteger(&data, 2);
-
+			
+#ifdef DEBUG
             sprintf(buffer, "Float: %f\n", voltage);
             putsUart0(buffer);
+#endif
 
 			if( (dac <= 2 && voltage != -1) && selectOutputVoltage(dac, voltage) )
 				putsUart0("Successfully wrote to DAC.");
 			else
-				putsUart0("ERROR: Could not write to DAC.");
+				putsUart0("ERROR: Could not write DC Voltage to DAC.");
 
         }
+		
+		/*  ======================= *
+         *  ||||||| C A L C ||||||| * 
+         *  ======================= */
+		if( isCommand(&data, "calculate", 2) )
+		{
+			calculateWave(SINE, lutA, dac);
+		}
 
         /*  ======================== *
          *  ||||||| T E S T |||||||| *
