@@ -199,10 +199,14 @@ uint16_t output2RValue(DAC select, float voltage)
 	{
 	case DAC_A:
 		dacVoltage = (voltage - OUT_OFFSET_A) / OUT_SLOPE_A;
+		if(dacVoltage >= 0 && dacVoltage <= DAC_OFFSET_A)
+            dacVoltage = DAC_OFFSET_A;
 		r_value = (dacVoltage - DAC_OFFSET_A) / DAC_SLOPE_A;
 		break;
 	case DAC_B:
 		dacVoltage = (voltage - OUT_OFFSET_B) / OUT_SLOPE_B;
+		if(dacVoltage >= 0 && dacVoltage <= DAC_OFFSET_B)
+            dacVoltage = DAC_OFFSET_B;
 		r_value = (dacVoltage - DAC_OFFSET_B) / DAC_SLOPE_B;
 		break;
 	default:
@@ -226,6 +230,7 @@ void calculateWave(WAVE type, uint16_t addr[], DAC select, uint32_t phase)
 	case DAC_A:
 		for(i = 0; i < LUT_SIZE; i++)
 			addr[i] = output2RValue(DAC_A, sin(phase));
+		
 		break;
 	case DAC_B:
 		break;
@@ -259,6 +264,10 @@ int main(void)
 	
 	uint16_t lutA[LUT_SIZE] = {0};
 	uint32_t phaseAccum = 0;
+	
+	DAC dac;
+    float voltage = -1, freq = -1, amp = -1, ofs = -1;
+	
 
     // Start of Shell
     while( 1 )
@@ -291,9 +300,6 @@ int main(void)
          *   SHELL COMMANDS   *
          * ================== */
 
-        DAC dac;
-        float voltage;
-
         /*  ======================= *
          *  ||||||||| D C ||||||||| *
          *  ======================= */
@@ -317,11 +323,22 @@ int main(void)
         }
 		
 		/*  ======================= *
-         *  ||||||| C A L C ||||||| * 
+         *  ||||||| S I N E ||||||| * 
          *  ======================= */
-		if( isCommand(&data, "calculate", 2) )
+		if( isCommand(&data, "sine", 4) )
 		{
-			calculateWave(SINE, lutA, dac);
+			dac = (DAC)getFieldInteger(&data, 1);
+			freq = getFieldFloat(&data, 2);
+			amp = getFieldFloat(&data, 3);
+			if( dac <= 2 && freq != -1 && amp != -1)
+			{
+				calculateWave(SINE, lutA, dac, phaseAccum);
+				putsUart0("Successfully calculated Sine wave.");
+			}
+			else
+			{
+				putsUart0("ERROR: Could not calculate Sine wave.");
+			}
 		}
 
         /*  ======================== *
