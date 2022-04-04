@@ -79,7 +79,7 @@ void parseFields(USER_DATA* data)
             }
 
             // if c is float
-            if( c == '.' )
+            if( c == '.' || c == '-' )
             {
                 data->fieldType[data->fieldCount] = 'f';
                 data->fieldPosition[data->fieldCount] = i;
