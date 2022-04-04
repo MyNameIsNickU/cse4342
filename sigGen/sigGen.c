@@ -16,7 +16,8 @@
 #include "spi1.h"
 #include "wait.h"
 #include "uart0.h"
-#include "cmd.h"
+#include "cmd.h" // Command line handling
+#include "timer.h" // timer services
 
 // Enums
 typedef enum _DAC
@@ -48,25 +49,27 @@ typedef enum _WAVE
  *  ========================== */
 
 // DAC Calibration Values
-#define DAC_SLOPE_A 0.0005
-#define DAC_OFFSET_A 0.0013
+#define DAC_SLOPE_A 0.000501
+#define DAC_OFFSET_A 0.002917
 
 #define DAC_SLOPE_B 0.0005
-#define DAC_OFFSET_B 0.0018
+#define DAC_OFFSET_B 0.000583
 
 #define DAC_MAX_RVALUE 4095
 #define DAC_MIN_RVALUE 0
 
 // OUTPUT Calibration Values
-#define OUT_SLOPE_A 4.5054
-#define OUT_OFFSET_A -4.606
+#define OUT_SLOPE_A -4.546829268
+#define OUT_OFFSET_A 4.489140488
 
-#define OUT_SLOPE_B 4.5
-#define OUT_OFFSET_B -4.604
+#define OUT_SLOPE_B -4.55864062
+#define OUT_OFFSET_B 4.506753756
+
+#define PRECISION_VALUE 4294967296‬ // 2^32
 
 
 // ||||| D E B U G   D E F I N E |||||
-//#define DEBUG
+#define DEBUG
 
 void initHw()
 {
@@ -218,7 +221,7 @@ uint16_t output2RValue(DAC select, float voltage)
 
  /* ======================================= *
   *              LUT PROCESSING             *
-  *  ====================================== */
+  * ======================================= */
 #define LUT_SIZE 2048
 
 void calculateWave(WAVE type, uint16_t addr[], DAC select, uint32_t phase)
@@ -240,8 +243,8 @@ void calculateWave(WAVE type, uint16_t addr[], DAC select, uint32_t phase)
 
 
  /* ======================================= *
-  *             SHELL PROCESSING            *
-  *  ====================================== */
+  *           SHELL PROCESSING              *
+  * ======================================= */
 
 int main(void)
 {
@@ -323,9 +326,31 @@ int main(void)
         }
 		
 		/*  ======================= *
+         *  |||||||| D A C |||||||| *
+         *  ======================= */
+        if( isCommand(&data, "dac", 2) )
+        {
+            dac = (DAC)getFieldInteger(&data, 1);
+            voltage = getFieldFloat(&data, 2);
+			if(voltage == -1)
+				voltage = (float)getFieldInteger(&data, 2);
+			
+#ifdef DEBUG
+            sprintf(buffer, "Float: %f\n", voltage);
+            putsUart0(buffer);
+#endif
+
+			if( (dac <= 2 && voltage != -1) && selectDACVoltage(dac, voltage) )
+				putsUart0("Successfully wrote to DAC.");
+			else
+				putsUart0("ERROR: Could not write DC Voltage to DAC.");
+
+        }
+		
+		/*  ======================= *
          *  ||||||| S I N E ||||||| * 
          *  ======================= */
-		if( isCommand(&data, "sine", 4) )
+		else if( isCommand(&data, "sine", 4) )
 		{
 			dac = (DAC)getFieldInteger(&data, 1);
 			freq = getFieldFloat(&data, 2);
@@ -373,6 +398,13 @@ int main(void)
                 setPinValue(BLUE_LED, 0);
                 setPinValue(GREEN_LED, 0);
             }
+			else if( strcomp(getFieldString(&data, 1), "value") )
+			{
+				// 0x7AE
+				writeSpi1Data(0x37E1);
+                writeSpi1Data(0xB7F3);
+				latchDAC();
+			}
             else
             {
                 putsUart0("ERROR: Invalid argument for 'test'.");
