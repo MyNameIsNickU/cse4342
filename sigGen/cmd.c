@@ -139,10 +139,10 @@ int32_t getFieldInteger(USER_DATA* data, uint8_t fieldNumber)
 float getFieldFloat(USER_DATA *data, uint8_t fieldNumber)
 {
     char *strValue;
-    float returnVal = -1;
+    float returnVal = 0;
 
 
-    if(fieldNumber <= data->fieldCount && data->fieldType[fieldNumber] == 'f')
+    if(fieldNumber <= data->fieldCount && (data->fieldType[fieldNumber] == 'f' || data->fieldType[fieldNumber] == 'n') )
     {
         strValue = &data->buffer[ data->fieldPosition[fieldNumber] ];
 
