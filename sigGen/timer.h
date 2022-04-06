@@ -26,7 +26,7 @@ typedef void (*_callback)();
 //-----------------------------------------------------------------------------
 
 void initTimer();
-void tickIsr();
+//void tickIsr();
 uint32_t random32();
 
 #endif
