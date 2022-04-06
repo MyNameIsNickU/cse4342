@@ -80,7 +80,7 @@ void initHw()
 	// Spi1 for communicating with SPI DAC
 	// Uses pins D0-D1 and D3 (SPI RX ununsed)
     initSpi1(USE_SSI_FSS); // Port D in enabled in here
-    setSpi1BaudRate(10e6, 40e6);
+    setSpi1BaudRate(20e6, 40e6);
     setSpi1Mode(0,0);
 
 	// UART for debugging and extra info
@@ -242,17 +242,20 @@ bool selectOutputVoltage(DAC select, float voltage)
 uint16_t lut_i = 0;
 uint16_t lutA[LUT_SIZE] = {0};
 
-void calculateWave(WAVE type, uint16_t addr[], DAC select, uint32_t phase, float freq)
+void calculateWave(WAVE type, uint16_t addr[], DAC select, float amp, float ofs)
 {
+	ofs = 0;
+	amp = 1;
 	uint16_t i;
-	uint16_t zeroPoint = output2RValue(DAC_A, 0);
+	float y;
 	// gain should be bits/voltage * amp voltage I want
 	switch(select)
 	{
 	case DAC_A:
 		for(i = 0; i < LUT_SIZE; i++)
 		{
-			lutA[i] = zeroPoint + (float)output2RValue(DAC_A, 1) * sin( ((float)i/(float)LUT_SIZE) * 2 * M_PI );
+			y = ( 2 * M_PI )*((float)i/(float)LUT_SIZE);
+			lutA[i] = output2RValue(DAC_A, ofs + (amp * sin(y)));
 			//phase += changePhase;
 		}
 		break;
@@ -269,27 +272,6 @@ void calculateWave(WAVE type, uint16_t addr[], DAC select, uint32_t phase, float
 	}
 #endif
 	
-}
-
-void executeWave(uint16_t addr[])
-{
-	uint16_t i;
-	
-	TIMER4_CTL_R |= TIMER_CTL_TAEN;
-	
-	/* while(1)
-	{
-		writeSpi1Data( 0x3000 | addr[i++] );
-		latchDAC();
-		if(i == LUT_SIZE)
-			i = 0;
-	}
-	
-	for(i = 0; i < LUT_SIZE; i++)
-	{
-		writeSpi1Data( 0x3000 | addr[i] );
-		latchDAC();
-	} */
 }
 
 void tickIsr()
@@ -414,11 +396,13 @@ int main(void)
 			dac = (DAC)getFieldInteger(&data, 1);
 			freq = getFieldFloat(&data, 2);
 			amp = getFieldFloat(&data, 3);
+			ofs = getFieldFloat(&data, 4);
+			ofs = 0;
 			if( dac <= 2 && freq != -1 && amp != -1)
 			{
-				calculateWave(SINE, lutA, dac, 0x4000000, freq);
+				calculateWave(SINE, lutA, dac, amp, ofs);
 				putsUart0("Successfully calculated Sine wave.");
-				executeWave(lutA);
+				TIMER4_CTL_R |= TIMER_CTL_TAEN;
 			}
 			else if( strcomp(getFieldString(&data, 1), "stop") )
 			{
