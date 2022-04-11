@@ -23,7 +23,8 @@
 typedef enum _DAC
 {
     DAC_A = 1,
-    DAC_B = 2
+    DAC_B = 2,
+    DAC_INVALID = 3
 } DAC;
 
 typedef enum _WAVE
@@ -97,7 +98,6 @@ void initHw()
     selectPinPushPullOutput(RED_LED);
     selectPinPushPullOutput(GREEN_LED);
     selectPinPushPullOutput(BLUE_LED);
-
 }
 
 // ==============================
@@ -171,6 +171,13 @@ bool selectDACVoltage(DAC select, float voltage)
 #define X1_A -0.197731281
 #define X0_A 1.002577993
 
+#define X5_B
+#define X4_B
+#define X3_B
+#define X2_B
+#define X1_B
+#define X0_B
+
 uint16_t output2RValue(DAC select, float voltage)
 {
 	float dacVoltage = 0;
@@ -201,7 +208,7 @@ uint16_t output2RValue(DAC select, float voltage)
 
 bool selectOutputVoltage(DAC select, float voltage)
 {
-	float dacVoltage;
+	float dacVoltage = -1;
     uint16_t r_value = 0;
 	bool wrote2Spi = false;
     switch(select)
@@ -238,36 +245,113 @@ bool selectOutputVoltage(DAC select, float voltage)
   *              LUT PROCESSING             *
   * ======================================= */
 
-#define LUT_SIZE 2048
-uint16_t lut_i = 0;
+#define LUT_SIZE (uint32_t)2048
+uint32_t lut_i_A = 0;
+uint32_t lut_i_B = 0;
+uint32_t phaseAccum_A = 0;
+uint32_t phaseAccum_B = 0;
 uint16_t lutA[LUT_SIZE] = {0};
+uint16_t lutB[LUT_SIZE] = {0};
+bool outA_EN = false;
+bool outB_EN = false;
 
-void calculateWave(WAVE type, uint16_t addr[], DAC select, float amp, float ofs)
+void calculateWave(WAVE type, DAC select, float amp, float ofs)
 {
-	ofs = 0;
-	amp = 1;
+	//ofs = 0;
+	//amp = 1;
 	uint16_t i;
 	float y;
 	// gain should be bits/voltage * amp voltage I want
-	switch(select)
+	switch(type)
 	{
-	case DAC_A:
+	case SINE:
 		for(i = 0; i < LUT_SIZE; i++)
 		{
 			y = ( 2 * M_PI )*((float)i/(float)LUT_SIZE);
-			lutA[i] = output2RValue(DAC_A, ofs + (amp * sin(y)));
-			//phase += changePhase;
+			if(select == DAC_A)
+				lutA[i] = output2RValue(select, ofs + (amp * sin(y)));
+			else if(select == DAC_B)
+				lutB[i] = output2RValue(select, ofs + (amp * sin(y)));
 		}
 		break;
-	case DAC_B:
+	case SQUARE:
+		for(i = 0; i < LUT_SIZE; i++)
+		{
+			if(select == DAC_A)
+			{
+				if( i / (LUT_SIZE/2) == 0 )
+					lutA[i] = output2RValue(select, ofs + amp);
+				else if( i / (LUT_SIZE/2) == 1 )
+					lutA[i] = output2RValue(select, ofs - amp);
+			}
+			else if(select == DAC_B)
+			{
+				if( i / (LUT_SIZE/2) == 0 )
+					lutB[i] = output2RValue(select, ofs + amp);
+				else if( i / (LUT_SIZE/2) == 1 )
+					lutB[i] = output2RValue(select, ofs - amp);
+			}
+		}
 		break;
+	case SAW:
+	// start at (ofs - amp) end at (ofs + amp)
+		for(i = 0; i < LUT_SIZE; i++)
+		{
+			// y = b + mx | m = 2*amp, x = i/LUT_SIZE-1
+			y = (ofs-amp) + (2.0*amp)*(float)i/((float)LUT_SIZE-1.0);
+			
+			if(select == DAC_A)	
+				lutA[i] = output2RValue(select, y);
+			
+			else if(select == DAC_B)
+				lutB[i] = output2RValue(select, y);
+		}
+		break;
+	case TRI:
+		for(i = 0; i < LUT_SIZE; i++)
+		{
+			if(select == DAC_A)
+			{
+				if( i / (LUT_SIZE/2) == 0)
+				{
+					y = (ofs-amp) + (2.0*amp) * (float)i / (((float)LUT_SIZE-1.0)/2.0);
+					lutA[i] = output2RValue(select, y);
+				}
+				else if( i / (LUT_SIZE/2) == 1)
+				{
+					y = (ofs+amp) - (2.0*amp) * (float)i / (((float)LUT_SIZE-1.0)/2.0);
+					lutA[i] = output2RValue(select, y);
+				}
+			}
+			else if(select == DAC_B)
+			{
+				if( i / (LUT_SIZE/2) == 0)
+				{
+					y = (ofs-amp) + (2.0*amp) * (float)i / (((float)LUT_SIZE-1.0)/2.0);
+					lutB[i] = output2RValue(select, y);
+				}
+				else if( i / (LUT_SIZE/2) == 1)
+				{
+					y = (ofs+amp) - (2.0*amp) * (float)i / (((float)LUT_SIZE-1.0)/2.0);
+					lutB[i] = output2RValue(select, y);
+				}
+			}
+		}
+		break;
+	default:
+		putsUart0("ERROR: Invalid waveform type.\n");
 	}
+	
+	if(select == DAC_A)
+		outA_EN = true;
+	else if(select == DAC_B)
+		outB_EN = true;
 	
 #ifdef DEBUG
 	char buffer[100];
 	for(i = 0; i < LUT_SIZE; i++)
 	{
-	    sprintf(buffer, "%u\n", lutA[i] );
+	    sprintf(buffer, "%u\t%u\n", lutA[i], lutB[i] );
 	    putsUart0(buffer);
 	}
 #endif
@@ -276,12 +360,53 @@ void calculateWave(WAVE type, uint16_t addr[], DAC select, float amp, float ofs)
 
 void tickIsr()
 {
-	if(lut_i == LUT_SIZE)
-		lut_i = 0;
+	// for looping the wave
+	if((lut_i_A >> 20) >= LUT_SIZE)
+		lut_i_A -= (LUT_SIZE << 20);
 	
-	writeSpi1Data( 0x3000 | lutA[lut_i++] );
-	latchDAC();
+	if( (lut_i_B >> 20) >= LUT_SIZE)
+		lut_i_B -= (LUT_SIZE << 20);
+	
+	// writing each value to SPI
+	if(outA_EN)
+	{
+		writeSpi1Data( 0x3000 | lutA[lut_i_A >> 20] );
+		latchDAC();
+		lut_i_A += phaseAccum_A;
+	}
+	
+	if(outB_EN)
+	{
+		writeSpi1Data( 0xB000 | lutB[lut_i_B >> 20] );
+		latchDAC();
+		lut_i_B += phaseAccum_B;
+	}
+	
     TIMER4_ICR_R = TIMER_ICR_TATOCINT;
+}
+
+uint32_t float2uint(float input)
+{
+	uint8_t i;
+	uint32_t returnValue = 0;
+	
+	uint16_t intValue = (uint32_t)input / 1;
+	returnValue = intValue << 20;
+	input -= intValue;
+	float calcValue;
+	
+	for(i = 20; i > 0; i--)
+	{
+	    calcValue = input - (float)1/(2 << (20-i));
+		if( calcValue > 0 )
+		{
+		    returnValue |= (1 << i-1);
+		    input = calcValue;
+		}
+
+	}
+	
+	return returnValue;
 }
 
 
@@ -309,11 +434,16 @@ int main(void)
     char buffer[MAX_CHARS + 1];
 	
 	
-	uint32_t phaseAccum = 0;
-	
-	DAC dac;
-    float voltage = -1, freq = -1, amp = -1, ofs = -1;
-	
+	DAC dac = DAC_INVALID;
+    float voltage = 0, freq = 0, amp = 1, ofs = 0;
+	float freq_ref = (((float)40e6 / (float)TIMER4_TAILR_R)) * (1.0 / (float)LUT_SIZE);
+	int32_t testValue = 0;
+
+	/* calculateWave(SINE, DAC_A, 1, 0);
+	freq = 20000;
+	phaseAccum_A = float2uint( freq/freq_ref );
+	TIMER4_CTL_R |= TIMER_CTL_TAEN; */
+	//while(1);
 
     // Start of Shell
     while( 1 )
@@ -355,7 +485,7 @@ int main(void)
             voltage = getFieldFloat(&data, 2);
 			
 #ifdef DEBUG
-            sprintf(buffer, "Float: %f\n", voltage);
+            sprintf(buffer, "DAC: %u\tVoltage: %f\n", dac, voltage);
             putsUart0(buffer);
 #endif
 
@@ -373,8 +503,6 @@ int main(void)
         {
             dac = (DAC)getFieldInteger(&data, 1);
             voltage = getFieldFloat(&data, 2);
-			if(voltage == -1)
-				voltage = (float)getFieldInteger(&data, 2);
 			
 #ifdef DEBUG
             sprintf(buffer, "Float: %f\n", voltage);
@@ -391,24 +519,70 @@ int main(void)
 		/*  ======================= *
          *  ||||||| S I N E ||||||| * 
          *  ======================= */
-		else if( isCommand(&data, "sine", 4) )
+		else if( isCommand(&data, "sine", 3) )
 		{
 			dac = (DAC)getFieldInteger(&data, 1);
 			freq = getFieldFloat(&data, 2);
 			amp = getFieldFloat(&data, 3);
-			ofs = getFieldFloat(&data, 4);
-			ofs = 0;
-			if( dac <= 2 && freq != -1 && amp != -1)
+			
+			if( isCommand(&data, "sine", 4) )
+				ofs = getFieldFloat(&data, 4);
+			
+#ifdef DEBUG
+			sprintf(buffer, "DAC: %u\tFreq: %f\tAmp: %f\tOFS: %f", dac, freq, amp, ofs);
+			putsUart0(buffer);
+#endif
+			if( dac <= 2 )
 			{
-				calculateWave(SINE, lutA, dac, amp, ofs);
+				calculateWave(SINE, dac, amp, ofs);
 				putsUart0("Successfully calculated Sine wave.");
+				if(dac == DAC_A)
+					phaseAccum_A = float2uint(freq / freq_ref);
+				else if(dac == DAC_B)
+					phaseAccum_B = float2uint(freq / freq_ref);
 				TIMER4_CTL_R |= TIMER_CTL_TAEN;
 			}
 			else if( strcomp(getFieldString(&data, 1), "stop") )
 			{
 				TIMER4_CTL_R &= ~TIMER_CTL_TAEN;
-				putsUart0("ERROR: Could not calculate Sine wave.");
 			}
+			else
+				putsUart0("ERROR: invalid argument for 'sine'.");
+		}
+		
+		
+		/*  ======================= *
+         *  ||||| S Q U A R E ||||| * 
+         *  ======================= */
+		else if( isCommand(&data, "square", 3) )
+		{
+			dac = (DAC)getFieldInteger(&data, 1);
+			freq = getFieldFloat(&data, 2);
+			amp = getFieldFloat(&data, 3);
+			
+			if( isCommand(&data, "square", 4) )
+				ofs = getFieldFloat(&data, 4);
+			
+#ifdef DEBUG
+			sprintf(buffer, "DAC: %u\tFreq: %f\tAmp: %f\tOFS: %f", dac, freq, amp, ofs);
+			putsUart0(buffer);
+#endif
+			if( dac <= 2 )
+			{
+				calculateWave(SQUARE, dac, amp, ofs);
+				putsUart0("Successfully calculated Square wave.");
+				if(dac == DAC_A)
+					phaseAccum_A = float2uint(freq / freq_ref);
+				else if(dac == DAC_B)
+					phaseAccum_B = float2uint(freq / freq_ref);
+				TIMER4_CTL_R |= TIMER_CTL_TAEN;
+			}
+			else if( strcomp(getFieldString(&data, 1), "stop") )
+			{
+				TIMER4_CTL_R &= ~TIMER_CTL_TAEN;
+			}
+			else
+				putsUart0("ERROR: invalid argument for 'square'.");
 		}
 
         /*  ======================== *
@@ -419,8 +593,29 @@ int main(void)
             if( strcomp(getFieldString(&data, 1), "DAC") )
             {
                 putsUart0("Testing DAC Voltages...");
+				
+				testValue = 0xFFF;
+				setPinValue(RED_LED, 1);
+				setPinValue(BLUE_LED, 1);
+				writeSpi1Data(0x3000 | testValue);
+				writeSpi1Data(0xB000 | testValue);
+				latchDAC();
+				waitMicrosecond(4000000);
+				
+				for(testValue = 0xF00; testValue >= 0; testValue -= 0x100)
+				{
+					setPinValue(RED_LED, !getPinValue(RED_LED) );
+					setPinValue(BLUE_LED, !getPinValue(BLUE_LED) );
+					writeSpi1Data(0x3000 | testValue);
+					writeSpi1Data(0xB000 | testValue);
+					latchDAC();
+					waitMicrosecond(4000000);
+				}
+				
+				setPinValue(RED_LED, 0);
+				setPinValue(BLUE_LED, 0);
 
-                // TEST DAC VOLTAGES
+                /* // TEST DAC VOLTAGES
                 setPinValue(RED_LED, 1);
                 writeSpi1Data(0x3FFF);
                 writeSpi1Data(0xBFFF);
@@ -525,7 +720,7 @@ int main(void)
 				
 				
 				setPinValue(BLUE_LED, 0);
-				setPinValue(RED_LED, 0);
+				setPinValue(RED_LED, 0); */
             }
 			else if( strcomp(getFieldString(&data, 1), "value") )
 			{
