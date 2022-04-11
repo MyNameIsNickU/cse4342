@@ -174,11 +174,21 @@ bool strcomp(char * a, char * b)
 bool isCommand(USER_DATA* data, char strCommand[], uint8_t minArguments)
 {
     char* strCompare = &data->buffer[ data->fieldPosition[0] ];
-
-    if( minArguments >= data->fieldCount - 1 && strcomp(strCompare, strCommand) )
-        return true;
-    else
-        return false;
+	
+	if( strcomp(strCompare, strCommand) )
+	{
+		if( minArguments <= data->fieldCount-1 )
+			return true;
+		else
+		{
+			putsUart0("ERROR: Not enough arguments for '");
+			putsUart0(strCompare);
+			putsUart0("'.\n");
+			return false;
+		}
+	}
+	else
+		return false;
 }
 
 void comm2str(instruction instruct, int index)
