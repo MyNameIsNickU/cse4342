@@ -41,7 +41,7 @@ void initTimer()
     TIMER4_CFG_R = TIMER_CFG_32_BIT_TIMER;           // configure as 32-bit timer (A+B)
     TIMER4_TAMR_R = TIMER_TAMR_TAMR_PERIOD;          // configure for periodic mode (count down)
     TIMER4_TAILR_R = 977;                           // set load value (50 kHz? rate)
-    TIMER4_CTL_R &= ~TIMER_CTL_TAEN;                  // turn-on timer
+    TIMER4_CTL_R &= ~TIMER_CTL_TAEN;                  // turn-off timer
     TIMER4_IMR_R |= TIMER_IMR_TATOIM;                // turn-on interrupt
     NVIC_EN2_R |= 1 << (INT_TIMER4A-80);             // turn-on interrupt 86 (TIMER4A)
 }
