@@ -248,6 +248,10 @@ bool selectOutputVoltage(DAC select, float voltage)
 #define LUT_SIZE (uint32_t)2048
 uint32_t lut_i_A = 0;
 uint32_t lut_i_B = 0;
+uint32_t currentCycles_A = 0;
+uint32_t currentCycles_B = 0;
+int32_t maxCycles_A = -1;
+int32_t maxCycles_B = -1;
 uint32_t phaseAccum_A = 0;
 uint32_t phaseAccum_B = 0;
 uint16_t lutA[LUT_SIZE] = {0};
@@ -320,7 +324,7 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs)
 				}
 				else if( i / (LUT_SIZE/2) == 1)
 				{
-					y = (ofs+amp) - (2.0*amp) * (float)i / (((float)LUT_SIZE-1.0)/2.0);
+					y = (ofs+amp) - (2.0*amp) * (((float)i) - ((float)LUT_SIZE/2)) / (((float)LUT_SIZE-1.0)/2.0);
 					lutA[i] = output2RValue(select, y);
 				}
 			}
@@ -333,7 +337,7 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs)
 				}
 				else if( i / (LUT_SIZE/2) == 1)
 				{
-					y = (ofs+amp) - (2.0*amp) * (float)i / (((float)LUT_SIZE-1.0)/2.0);
+					y = (ofs+amp) - (2.0*amp) * (((float)i) - ((float)LUT_SIZE/2)) / (((float)LUT_SIZE-1.0)/2.0);
 					lutB[i] = output2RValue(select, y);
 				}
 			}
@@ -363,10 +367,23 @@ void tickIsr()
 {
 	// for looping the wave
 	if((lut_i_A >> 20) >= LUT_SIZE)
+	{
 		lut_i_A -= (LUT_SIZE << 20);
+		currentCycles_A++;
+	}
 	
 	if( (lut_i_B >> 20) >= LUT_SIZE)
+	{
 		lut_i_B -= (LUT_SIZE << 20);
+		currentCycles_B++;
+	}
+	
+	// if cycles hit the set limit, stop
+	// ignore if the maxCycles value set to -1
+	if(currentCycles_A == maxCycles_A && maxCycles_A != -1)
+		outA_EN = false;
+	if(currentCycles_B == maxCycles_B && maxCycles_B != -1)
+		outB_EN = false;
 	
 	// writing each value to SPI
 	if(outA_EN)
@@ -445,7 +462,9 @@ int main(void)
 	phaseAccum_A = float2uint( freq/freq_ref );
 	TIMER4_CTL_R |= TIMER_CTL_TAEN; */
 	//while(1);
-
+	
+	putsUart0("|Signal Generator START|\n");
+	putsUart0("------------------------\n\n");
     // Start of Shell
     while( 1 )
     {
@@ -518,6 +537,28 @@ int main(void)
 				putsUart0("Successfully wrote to DAC.");
 			else
 				putsUart0("ERROR: Could not write DC Voltage to DAC.");
+
+        }
+		
+		/*  ======================= *
+         *  ||||| C Y C L E S ||||| *
+         *  ======================= */
+        else if( isCommand(&data, "cycles", 1) )
+        {
+			if(data.fieldType[1] == 'n')
+			{
+				maxCycles_A = getFieldInteger(&data, 1);
+				maxCycles_B = getFieldInteger(&data, 1);
+			}
+			else if(data.fieldType[1] == 'a' && strcomp(getFieldString(&data, 1), "continuous") )
+			{
+				maxCycles_A = -1;
+				maxCycles_B = -1;
+			}
+			else
+			{
+				putsUart0("ERROR: Invalid command for 'cycles'.");
+			}
 
         }
 		
@@ -825,6 +866,9 @@ int main(void)
             putsUart0("dc OUT, VOLTAGE\n");
             putsUart0("cycles N\n");
             putsUart0("sine OUT, FREQ, AMP, [OFS]\n");
+			putsUart0("square OUT, FREQ, AMP, [OFS]\n");
+			putsUart0("sawtooth OUT, FREQ, AMP, [OFS]\n");
+			putsUart0("UNTESTED: triangle OUT, FREQ, AMP, [OFS]\n");
         }
         else
         {
