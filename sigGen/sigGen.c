@@ -308,6 +308,7 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs)
 		}
 		break;
 	case TRI:
+	//TODO: WRONG
 		for(i = 0; i < LUT_SIZE; i++)
 		{
 			if(select == DAC_A)
@@ -448,6 +449,10 @@ int main(void)
     // Start of Shell
     while( 1 )
     {
+		ofs = 0;
+		amp = 1;
+		freq = 0;
+		voltage = 0;
 
         putcUart0('>');
         setPinValue(BLUE_LED, 1);
@@ -583,6 +588,74 @@ int main(void)
 			}
 			else
 				putsUart0("ERROR: invalid argument for 'square'.");
+		}
+		
+		/*  ======================= *
+         *  |||||||| S A W |||||||| * 
+         *  ======================= */
+		else if( isCommand(&data, "sawtooth", 3) )
+		{
+			dac = (DAC)getFieldInteger(&data, 1);
+			freq = getFieldFloat(&data, 2);
+			amp = getFieldFloat(&data, 3);
+			
+			if( isCommand(&data, "sawtooth", 4) )
+				ofs = getFieldFloat(&data, 4);
+			
+#ifdef DEBUG
+			sprintf(buffer, "DAC: %u\tFreq: %f\tAmp: %f\tOFS: %f", dac, freq, amp, ofs);
+			putsUart0(buffer);
+#endif
+			if( dac <= 2 )
+			{
+				calculateWave(SAW, dac, amp, ofs);
+				putsUart0("Successfully calculated Sawtooth wave.");
+				if(dac == DAC_A)
+					phaseAccum_A = float2uint(freq / freq_ref);
+				else if(dac == DAC_B)
+					phaseAccum_B = float2uint(freq / freq_ref);
+				TIMER4_CTL_R |= TIMER_CTL_TAEN;
+			}
+			else if( strcomp(getFieldString(&data, 1), "stop") )
+			{
+				TIMER4_CTL_R &= ~TIMER_CTL_TAEN;
+			}
+			else
+				putsUart0("ERROR: invalid argument for 'sawtooth'.");
+		}
+		
+		/*  ======================= *
+         *  |||||||| T R I |||||||| * 
+         *  ======================= */
+		else if( isCommand(&data, "triangle", 3) )
+		{
+			dac = (DAC)getFieldInteger(&data, 1);
+			freq = getFieldFloat(&data, 2);
+			amp = getFieldFloat(&data, 3);
+			
+			if( isCommand(&data, "triangle", 4) )
+				ofs = getFieldFloat(&data, 4);
+			
+#ifdef DEBUG
+			sprintf(buffer, "DAC: %u\tFreq: %f\tAmp: %f\tOFS: %f", dac, freq, amp, ofs);
+			putsUart0(buffer);
+#endif
+			if( dac <= 2 )
+			{
+				calculateWave(TRI, dac, amp, ofs);
+				putsUart0("Successfully calculated Triangle wave.");
+				if(dac == DAC_A)
+					phaseAccum_A = float2uint(freq / freq_ref);
+				else if(dac == DAC_B)
+					phaseAccum_B = float2uint(freq / freq_ref);
+				TIMER4_CTL_R |= TIMER_CTL_TAEN;
+			}
+			else if( strcomp(getFieldString(&data, 1), "stop") )
+			{
+				TIMER4_CTL_R &= ~TIMER_CTL_TAEN;
+			}
+			else
+				putsUart0("ERROR: invalid argument for 'triangle'.");
 		}
 
         /*  ======================== *
