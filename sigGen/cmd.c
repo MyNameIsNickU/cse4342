@@ -181,9 +181,9 @@ bool isCommand(USER_DATA* data, char strCommand[], uint8_t minArguments)
 			return true;
 		else
 		{
-			putsUart0("ERROR: Not enough arguments for '");
+			/* putsUart0("ERROR: Not enough arguments for '");
 			putsUart0(strCompare);
-			putsUart0("'.\n");
+			putsUart0("'.\n"); */
 			return false;
 		}
 	}
