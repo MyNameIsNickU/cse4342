@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include "tm4c123gh6pm.h"
 #include "timer.h"
+#include "nvic.h"
 
 //-----------------------------------------------------------------------------
 // Global variables
@@ -44,6 +45,20 @@ void initTimer()
     TIMER4_CTL_R &= ~TIMER_CTL_TAEN;                  // turn-off timer
     TIMER4_IMR_R |= TIMER_IMR_TATOIM;                // turn-on interrupt
     NVIC_EN2_R |= 1 << (INT_TIMER4A-80);             // turn-on interrupt 86 (TIMER4A)
+}
+
+void initTimer2()
+{
+	SYSCTL_RCGCTIMER_R |= SYSCTL_RCGCTIMER_R2;
+    _delay_cycles(3);
+	
+	TIMER2_CTL_R &= ~TIMER_CTL_TAEN;                 // turn-off timer before reconfiguring
+    TIMER2_CFG_R = TIMER_CFG_32_BIT_TIMER;           // configure as 32-bit timer (A+B)
+    TIMER2_TAMR_R = TIMER_TAMR_TAMR_PERIOD;          // configure for periodic mode (count down)
+    TIMER2_TAILR_R = 40000000;                           // set load value (1 Hz rate)
+    TIMER2_IMR_R |= TIMER_IMR_TATOIM;                // turn-on interrupt
+    enableNvicInterrupt(INT_TIMER2A);
+	TIMER2_CTL_R &= ~TIMER_CTL_TAEN;
 }
 
 // Placeholder random number function

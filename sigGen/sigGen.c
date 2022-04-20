@@ -43,6 +43,9 @@ typedef enum _WAVE
 
 #define SPI_LDAC PORTD,2
 
+#define ADC_IN1 PORTE,4
+#define ADC_IN2 PORTE,5
+
 // MCP2844
 #define OUTPUT_SELECT 32768
 
@@ -91,12 +94,18 @@ void initHw()
 	
 	// Timer Services for writing out to LUTs
 	initTimer();
+	initTimer2();
 	
 	// ADC library for reading in signals
+	enablePort(PORTE);
+	selectPinAnalogInput(ADC_IN1);
+	selectPinAnalogInput(ADC_IN2);
+	setPinAuxFunction(ADC_IN1, GPIO_PCTL_PE4_AIN9);
+	setPinAuxFunction(ADC_IN2, GPIO_PCTL_PE5_AIN8);
 	initAdc0Ss2_3();
-	setAdc0Ss2_3Log2AverageCount(6);
-	setAdc0Ss3Mux(0);
-	setAdc0Ss2Mux(0);
+	setAdc0Ss2_3Log2AverageCount(4); // 16 samples == shown value
+	setAdc0Ss3Mux(9); // PE4
+	setAdc0Ss2Mux(8); // PE5
 
 	// LDAC pin for latching the SPI DAC 
     selectPinPushPullOutput(SPI_LDAC);
@@ -179,12 +188,12 @@ bool selectDACVoltage(DAC select, float voltage)
 #define X1_A -0.197731281
 #define X0_A 1.002577993
 
-#define X5_B
-#define X4_B
-#define X3_B
-#define X2_B
-#define X1_B
-#define X0_B
+#define X5_B -0.000293044
+#define X4_B -0.000891307
+#define X3_B 0.007338118
+#define X2_B 0x0
+#define X1_B -0.235113482
+#define X0_B 0.879180291
 
 uint16_t output2RValue(DAC select, float voltage)
 {
@@ -202,7 +211,9 @@ uint16_t output2RValue(DAC select, float voltage)
 		r_value = (dacVoltage - DAC_OFFSET_A) / DAC_SLOPE_A;
 		break;
 	case DAC_B:
+		//dacVoltage = pow(voltage, 5) * X5_B + pow(voltage, 4) * X4_B + pow(voltage, 3) * X3_B + pow(voltage, 2) * X2_B + voltage * X1_B + X0_B;
 		dacVoltage = (voltage - OUT_OFFSET_B) / OUT_SLOPE_B;
+		
 		if(dacVoltage >= 0 && dacVoltage <= DAC_OFFSET_B)
             dacVoltage = DAC_OFFSET_B;
 		r_value = (dacVoltage - DAC_OFFSET_B) / DAC_SLOPE_B;
@@ -267,6 +278,10 @@ uint16_t lutB[LUT_SIZE] = {0};
 bool outA_EN = false;
 bool outB_EN = false;
 
+// Optional Flags
+bool differentialEN = false;
+bool hilbertEN = false;
+
 void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycle)
 {
 	//ofs = 0;
@@ -276,10 +291,16 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 	float squarePercent = (float)dutyCycle / 100;
 	// gain should be bits/voltage * amp voltage I want
 	
-	if(select == DAC_A)
+	/* if(select == DAC_A)
 		outA_EN = false;
 	if(select == DAC_B)
-		outB_EN = false;
+		outB_EN = false; */
+	
+	if(select == DAC_B && differentialEN)
+	{
+		putsUart0("ERROR: Differential is on, cannot change DAC_B!\n");
+		return;
+	}
 	
 	switch(type)
 	{
@@ -288,7 +309,11 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 		{
 			y = ( 2 * M_PI )*((float)i/(float)LUT_SIZE);
 			if(select == DAC_A)
+			{
 				lutA[i] = output2RValue(select, ofs + (amp * sin(y)));
+				if(differentialEN)
+					lutB[i] = output2RValue( DAC_B, -1*( ofs + (amp * sin(y)) ) );
+			}
 			else if(select == DAC_B)
 				lutB[i] = output2RValue(select, ofs + (amp * sin(y)));
 		}
@@ -305,9 +330,9 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 			}
 			else if(select == DAC_B)
 			{
-				if( i / (LUT_SIZE * squarePercent) == 0 )
+				if( i / (LUT_SIZE * squarePercent) )
 					lutB[i] = output2RValue(select, ofs + amp);
-				else if( i / (LUT_SIZE * squarePercent) == 1 )
+				else if( i / (LUT_SIZE * squarePercent) )
 					lutB[i] = output2RValue(select, ofs - amp);
 			}
 		}
@@ -327,7 +352,6 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 		}
 		break;
 	case TRI:
-	//TODO: WRONG
 		for(i = 0; i < LUT_SIZE; i++)
 		{
 			if(select == DAC_A)
@@ -364,7 +388,7 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 	
 	if(select == DAC_A)
 		outA_EN = true;
-	else if(select == DAC_B)
+	if(select == DAC_B || differentialEN)
 		outB_EN = true;
 	
 #ifdef DEBUG
@@ -421,6 +445,15 @@ void tickIsr()
     TIMER4_ICR_R = TIMER_ICR_TATOCINT;
 }
 
+void timer2tick()
+{
+	setPinValue(GREEN_LED, !getPinValue(GREEN_LED) );
+	
+	testAdc();
+	
+	TIMER2_ICR_R = TIMER_ICR_TATOCINT;
+}
+
 uint32_t float2uint(float input)
 {
 	uint8_t i;
@@ -443,6 +476,17 @@ uint32_t float2uint(float input)
 	}
 	
 	return returnValue;
+}
+
+void testAdc()
+{
+	uint16_t adcValue3, adcValue2;
+	char buffer[20];
+	
+	adcValue3 = readAdc0Ss3();
+	adcValue2 = readAdc0Ss2();
+	sprintf(buffer, "SS3: %d\tSS2: %d\n", adcValue3, adcValue2);
+	putsUart0(buffer);
 }
 
 
@@ -550,6 +594,8 @@ int main(void)
         {
 			currentCycles_A = 0;
 			currentCycles_B = 0;
+			lut_i_A = 0;
+			lut_i_B = 0;
 			outA_EN = true;
 			outB_EN = true;
             TIMER4_CTL_R |= TIMER_CTL_TAEN;
@@ -623,8 +669,12 @@ int main(void)
 				putsUart0("Successfully calculated Sine wave.");
 				if(dac == DAC_A)
 					phaseAccum_A = float2uint(freq / freq_ref);
-				else if(dac == DAC_B)
+				
+				if(dac == DAC_B && !differentialEN)
 					phaseAccum_B = float2uint(freq / freq_ref);
+				
+				if(differentialEN)
+					phaseAccum_B = phaseAccum_A;
 				TIMER4_CTL_R |= TIMER_CTL_TAEN;
 			}
 			else
@@ -765,113 +815,7 @@ int main(void)
 				
 				setPinValue(RED_LED, 0);
 				setPinValue(BLUE_LED, 0);
-
-                /* // TEST DAC VOLTAGES
-                setPinValue(RED_LED, 1);
-                writeSpi1Data(0x3FFF);
-                writeSpi1Data(0xBFFF);
-                latchDAC();
-                waitMicrosecond(4000000);
-
-                setPinValue(BLUE_LED, 1);
-                writeSpi1Data(0x3F00);
-                writeSpi1Data(0xBF00);
-                latchDAC();
-                waitMicrosecond(4000000);
-
-                setPinValue(BLUE_LED, 0);
-                writeSpi1Data(0x3E00);
-                writeSpi1Data(0xBE00);
-                latchDAC();
-                waitMicrosecond(4000000);
 				
-				setPinValue(BLUE_LED, 1);
-                writeSpi1Data(0x3D00);
-                writeSpi1Data(0xBD00);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 0);
-                writeSpi1Data(0x3C00);
-                writeSpi1Data(0xBC00);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 1);
-                writeSpi1Data(0x3B00);
-                writeSpi1Data(0xBB00);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 0);
-                writeSpi1Data(0x3A00);
-                writeSpi1Data(0xBA00);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 1);
-                writeSpi1Data(0x3900);
-                writeSpi1Data(0xB900);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 0);
-                writeSpi1Data(0x3800);
-                writeSpi1Data(0xB800);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 1);
-                writeSpi1Data(0x3700);
-                writeSpi1Data(0xB700);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 0);
-                writeSpi1Data(0x3600);
-                writeSpi1Data(0xB600);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 1);
-                writeSpi1Data(0x3500);
-                writeSpi1Data(0xB500);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 0);
-                writeSpi1Data(0x3400);
-                writeSpi1Data(0xB400);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 1);
-                writeSpi1Data(0x3300);
-                writeSpi1Data(0xB300);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 0);
-                writeSpi1Data(0x3200);
-                writeSpi1Data(0xB200);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 1);
-                writeSpi1Data(0x3100);
-                writeSpi1Data(0xB100);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				setPinValue(BLUE_LED, 0);
-                writeSpi1Data(0x3000);
-                writeSpi1Data(0xB000);
-                latchDAC();
-                waitMicrosecond(4000000);
-				
-				
-				setPinValue(BLUE_LED, 0);
-				setPinValue(RED_LED, 0); */
             }
 			else if( strcomp(getFieldString(&data, 1), "value") )
 			{
@@ -880,10 +824,36 @@ int main(void)
                 writeSpi1Data(0xB7F3);
 				latchDAC();
 			}
+			else if( strcomp(getFieldString(&data, 1), "adc" ) )
+			{
+				if( strcomp(getFieldString(&data, 2), "ON" ) )
+					TIMER2_CTL_R |= TIMER_CTL_TAEN;
+				else if( strcomp(getFieldString(&data, 2), "OFF" ) )
+				{
+					TIMER2_CTL_R &= ~TIMER_CTL_TAEN;
+					setPinValue(GREEN_LED, 0);
+				}
+			}
+			
             else
             {
                 putsUart0("ERROR: Invalid argument for 'test'.");
             }
+        }
+		
+		/*  =============================== *
+         *  ||||||||||| D I F F ||||||||||| *
+         *  =============================== */
+        else if( isCommand(&data, "differential", 1) )
+        {
+            if( strcomp(getFieldString(&data, 1), "ON") )
+			{
+				differentialEN = true;
+			}
+			else if( strcomp(getFieldString(&data, 1), "OFF") )
+				differentialEN = false;
+			else
+				putsUart0("ERROR: Invalid command for 'differential'.\n");
         }
 
         /*  =============================== *
@@ -892,6 +862,16 @@ int main(void)
         else if( isCommand(&data, "reset", 0) )
         {
             NVIC_APINT_R = NVIC_APINT_VECTKEY | NVIC_APINT_SYSRESETREQ;
+        }
+		
+		/*  =============================== *
+         *  |||||||| V O L T A G E |||||||| *
+         *  =============================== */
+        else if( isCommand(&data, "voltage", 1) )
+        {
+            dac = (DAC)getFieldInteger(&data, 1);
+			
+			testAdc();
         }
 
         /*  ============================= *
