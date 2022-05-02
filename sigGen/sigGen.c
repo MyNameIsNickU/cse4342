@@ -303,17 +303,21 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 	float squarePercent = (float)dutyCycle / 100;
 	// gain should be bits/voltage * amp voltage I want
 	
-	/* if(select == DAC_A)
-		outA_EN = false;
-	if(select == DAC_B)
-		outB_EN = false; */
+	//if(select == DAC_A)
+	outA_EN = false;
+	//if(select == DAC_B)
+	outB_EN = false;
 	
 	if(select == DAC_B && differentialEN)
 	{
 		putsUart0("ERROR: Differential is on, cannot change DAC_B!\n");
 		return;
 	}
-	
+	if(select == DAC_B && hilbertEN)
+	{
+		putsUart0("ERROR: Hilbert is on, cannot change DAC_B!\n");
+		return;
+	}
 	switch(type)
 	{
 	case SINE:
@@ -325,6 +329,8 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 				lutA[i] = output2RValue(select, ofs + (amp * sin(y)));
 				if(differentialEN)
 					lutB[i] = output2RValue( DAC_B, -1*( ofs + (amp * sin(y)) ) );
+				else if(hilbertEN)
+					lutB[i] = output2RValue( DAC_B, -1*( ofs + (amp * cos(y)) ) );
 			}
 			else if(select == DAC_B)
 				lutB[i] = output2RValue(select, ofs + (amp * sin(y)));
@@ -336,15 +342,23 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 			if(select == DAC_A)
 			{
 				if( i <= (LUT_SIZE * squarePercent) )
+				{
 					lutA[i] = output2RValue(select, ofs + amp);
+					if(differentialEN)
+						lutB[i] = output2RValue(DAC_B, ofs - amp);
+				}
 				else if( i > (LUT_SIZE * squarePercent) )
+				{
 					lutA[i] = output2RValue(select, ofs - amp);
+					if(differentialEN)
+						lutB[i] = output2RValue(DAC_B, ofs + amp);
+				}
 			}
 			else if(select == DAC_B)
 			{
-				if( i / (LUT_SIZE * squarePercent) )
+				if( i <= (LUT_SIZE * squarePercent) )
 					lutB[i] = output2RValue(select, ofs + amp);
-				else if( i / (LUT_SIZE * squarePercent) )
+				else if( i > (LUT_SIZE * squarePercent) )
 					lutB[i] = output2RValue(select, ofs - amp);
 			}
 		}
@@ -356,8 +370,12 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 			// y = b + mx | m = 2*amp, x = i/LUT_SIZE-1
 			y = (ofs-amp) + (2.0*amp)*(float)i/((float)LUT_SIZE-1.0);
 			
-			if(select == DAC_A)	
+			if(select == DAC_A)
+			{
 				lutA[i] = output2RValue(select, y);
+				if(differentialEN)
+					lutB[i] = output2RValue(DAC_B, -1.0 * y);
+			}
 			
 			else if(select == DAC_B)
 				lutB[i] = output2RValue(select, y);
@@ -372,11 +390,15 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 				{
 					y = (ofs-amp) + (2.0*amp) * (float)i / (((float)LUT_SIZE-1.0)/2.0);
 					lutA[i] = output2RValue(select, y);
+					if(differentialEN)
+						lutB[i] = output2RValue(DAC_B, -1.0 * y);
 				}
 				else if( i / (LUT_SIZE/2) == 1)
 				{
 					y = (ofs+amp) - (2.0*amp) * (((float)i) - ((float)LUT_SIZE/2)) / (((float)LUT_SIZE-1.0)/2.0);
 					lutA[i] = output2RValue(select, y);
+					if(differentialEN)
+						lutB[i] = output2RValue(DAC_B, -1.0 * y);
 				}
 			}
 			else if(select == DAC_B)
@@ -398,10 +420,10 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 		putsUart0("ERROR: Invalid waveform type.\n");
 	}
 	
-	if(select == DAC_A)
+	/* if(select == DAC_A)
 		outA_EN = true;
 	if(select == DAC_B || differentialEN)
-		outB_EN = true;
+		outB_EN = true; */
 	
 #ifdef DEBUG
 	char buffer[100];
@@ -688,6 +710,8 @@ int main(void)
         }
 		else if( isCommand(&data, "stop", 0) )
 		{
+			selectOutputVoltage(DAC_A, 0);
+			selectOutputVoltage(DAC_B, 0);
 			TIMER4_CTL_R &= ~TIMER_CTL_TAEN;
 		}
 		
@@ -714,13 +738,14 @@ int main(void)
 		/*  ======================= *
          *  ||||| C Y C L E S ||||| *
          *  ======================= */
-        else if( isCommand(&data, "cycles", 2) )
+        else if( isCommand(&data, "cycles", 1) )
         {
-			
 			if(data.fieldType[1] == 'n')
 			{
-				maxCycles_A = getFieldInteger(&data, 1);
-				maxCycles_B = getFieldInteger(&data, 1);
+				if(getFieldInteger(&data, 1) == 1)
+					maxCycles_A = getFieldInteger(&data, 2);
+				else if(getFieldInteger(&data, 1) == 2)
+					maxCycles_B = getFieldInteger(&data, 2);
 			}
 			else if(data.fieldType[1] == 'a' && strcomp(getFieldString(&data, 1), "continuous") )
 			{
@@ -759,8 +784,9 @@ int main(void)
 				if(dac == DAC_B && !differentialEN)
 					phaseAccum_B = float2uint(freq / freq_ref);
 				
-				if(differentialEN)
+				if(differentialEN || hilbertEN)
 					phaseAccum_B = phaseAccum_A;
+				
 				TIMER4_CTL_R |= TIMER_CTL_TAEN;
 			}
 			else
@@ -794,6 +820,8 @@ int main(void)
 					phaseAccum_A = float2uint(freq / freq_ref);
 				else if(dac == DAC_B)
 					phaseAccum_B = float2uint(freq / freq_ref);
+				if(differentialEN)
+					phaseAccum_B = phaseAccum_A;
 				TIMER4_CTL_R |= TIMER_CTL_TAEN;
 			}
 			else if( strcomp(getFieldString(&data, 1), "stop") )
@@ -828,6 +856,8 @@ int main(void)
 					phaseAccum_A = float2uint(freq / freq_ref);
 				else if(dac == DAC_B)
 					phaseAccum_B = float2uint(freq / freq_ref);
+				if(differentialEN)
+					phaseAccum_B = phaseAccum_A;
 				TIMER4_CTL_R |= TIMER_CTL_TAEN;
 			}
 			else if( strcomp(getFieldString(&data, 1), "stop") )
@@ -863,6 +893,8 @@ int main(void)
 				else if(dac == DAC_B)
 					phaseAccum_B = float2uint(freq / freq_ref);
 				TIMER4_CTL_R |= TIMER_CTL_TAEN;
+				if(differentialEN)
+					phaseAccum_B = phaseAccum_A;
 			}
 			else if( strcomp(getFieldString(&data, 1), "stop") )
 			{
@@ -931,10 +963,14 @@ int main(void)
         {
             if( strcomp(getFieldString(&data, 1), "ON") )
 			{
+				putsUart0("Differential enabled. Please enter waveform on DAC A.\n");
 				differentialEN = true;
 			}
 			else if( strcomp(getFieldString(&data, 1), "OFF") )
+			{
+				putsUart0("Differential disabled. Normal behavior resumed.\n");
 				differentialEN = false;
+			}
 			else
 				putsUart0("ERROR: Invalid command for 'differential'.\n");
         }
@@ -947,7 +983,8 @@ int main(void)
             if( strcomp(getFieldString(&data, 1), "ON") )
 			{
 				hilbertEN = true;
-				lut_i_B = (LUT_SIZE/4) << INTEGER_BITS;
+				putsUart0("Hilbert enabled. Please enter sine wave on DAC A.\n");
+				//lut_i_B = (LUT_SIZE/4) << INTEGER_BITS;
 			}
 			else if( strcomp(getFieldString(&data, 1), "OFF") )
 				hilbertEN = false;
@@ -1017,15 +1054,15 @@ int main(void)
 			// multiply this value by .8 mV | .0008
 			if(dac == DAC_A)
 			{
-				adcValue3 = (float)readAdc0Ss3() * 3.3 / 4095.0;
-				sprintf(buffer, "SS3: %f V\n", adcValue3);
+				adcValue2 = (float)readAdc0Ss2() * 3.3 / 4095.0;
+				sprintf(buffer, "SS2: %f V\n", adcValue2);
 				putsUart0(buffer);
 			}
 			
 			if(dac == DAC_B)
 			{
-				adcValue2 = (float)readAdc0Ss2() * 3.3 / 4095.0;
-				sprintf(buffer, "SS2: %f V\n", adcValue2);
+				adcValue3 = (float)readAdc0Ss3() * 3.3 / 4095.0;
+				sprintf(buffer, "SS3: %f V\n", adcValue3);
 				putsUart0(buffer);
 			}
         }
@@ -1037,9 +1074,9 @@ int main(void)
         {
             putsUart0("Possible Commands:\n");
             putsUart0("dc OUT, VOLTAGE\n");
-            putsUart0("cycles N\n");
+            putsUart0("cycles OUT, N\n");
             putsUart0("sine OUT, FREQ, AMP, [OFS]\n");
-			putsUart0("square OUT, FREQ, AMP, [OFS]\n");
+			putsUart0("square OUT, FREQ, AMP, [OFS] [D.C.]\n");
 			putsUart0("sawtooth OUT, FREQ, AMP, [OFS]\n");
 			putsUart0("triangle OUT, FREQ, AMP, [OFS]\n");
         }
