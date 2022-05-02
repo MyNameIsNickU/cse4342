@@ -64,13 +64,16 @@ typedef enum _WAVE
 #define DAC_MIN_RVALUE 0
 
 // OUTPUT Calibration Values
-#define OUT_SLOPE_A -4.546829268
-#define OUT_OFFSET_A 4.489140488
+#define OUT_SLOPE_A -5.32148859
+#define OUT_OFFSET_A 5.335339304
 
-#define OUT_SLOPE_B -4.55864062
-#define OUT_OFFSET_B 4.506753756
+#define OUT_SLOPE_B -5.246581272
+#define OUT_OFFSET_B 5.299569261
 
 #define PRECISION_VALUE 4294967296 // 2^32
+
+#define MAX_VPOS 4.4
+#define MAX_VNEG -4.8
 
 
 // ||||| D E B U G   D E F I N E |||||
@@ -100,12 +103,14 @@ void initHw()
 	enablePort(PORTE);
 	selectPinAnalogInput(ADC_IN1);
 	selectPinAnalogInput(ADC_IN2);
+	//enablePinPulldown(ADC_IN1);
+	//enablePinPulldown(ADC_IN2);
 	setPinAuxFunction(ADC_IN1, GPIO_PCTL_PE4_AIN9);
 	setPinAuxFunction(ADC_IN2, GPIO_PCTL_PE5_AIN8);
 	initAdc0Ss2_3();
-	setAdc0Ss2_3Log2AverageCount(4); // 16 samples == shown value
-	setAdc0Ss3Mux(9); // PE4
-	setAdc0Ss2Mux(8); // PE5
+	setAdc0Ss2_3Log2AverageCount(2); // 16 samples == shown value
+	setAdc0Ss3Mux(9); // PE4, IN1
+	setAdc0Ss2Mux(8); // PE5, IN2
 
 	// LDAC pin for latching the SPI DAC 
     selectPinPushPullOutput(SPI_LDAC);
@@ -200,10 +205,17 @@ uint16_t output2RValue(DAC select, float voltage)
 	float dacVoltage = 0;
 	uint16_t r_value = 0;
 	
+	// caps the requested voltage based on limits
+	if(voltage > MAX_VPOS)
+		voltage = MAX_VPOS;
+	if(voltage < MAX_VNEG)
+		voltage = MAX_VNEG;
+	
 	switch(select)
 	{
 	case DAC_A:
-		dacVoltage = pow(voltage, 5) * X5_A + pow(voltage, 4) * X4_A + pow(voltage, 3) * X3_A + pow(voltage, 2) * X2_A + voltage * X1_A + X0_A;
+		//dacVoltage = pow(voltage, 5) * X5_A + pow(voltage, 4) * X4_A + pow(voltage, 3) * X3_A + pow(voltage, 2) * X2_A + voltage * X1_A + X0_A;
+		dacVoltage = (voltage - OUT_OFFSET_A) / OUT_SLOPE_A;
 		
 		if(dacVoltage >= 0 && dacVoltage <= DAC_OFFSET_A)
             dacVoltage = DAC_OFFSET_A;
@@ -265,13 +277,13 @@ bool selectOutputVoltage(DAC select, float voltage)
   * ======================================= */
 
 #define LUT_SIZE (uint32_t)2048
-uint32_t lut_i_A = 0;
+uint32_t lut_i_A = 0; // current lut index
 uint32_t lut_i_B = 0;
 uint32_t currentCycles_A = 0;
 uint32_t currentCycles_B = 0;
-int32_t maxCycles_A = -1;
+int32_t maxCycles_A = -1; // defaults to -1 == continuous
 int32_t maxCycles_B = -1;
-uint32_t phaseAccum_A = 0;
+uint32_t phaseAccum_A = 0; // delta phase, how much to add to i
 uint32_t phaseAccum_B = 0;
 uint16_t lutA[LUT_SIZE] = {0};
 uint16_t lutB[LUT_SIZE] = {0};
@@ -402,58 +414,13 @@ void calculateWave(WAVE type, DAC select, float amp, float ofs, uint8_t dutyCycl
 	
 }
 
+void testAdc()
+{
+	
+}
+
 #define INTEGER_BITS 16
 #define FRACTIONAL_BITS 32-INTEGER_BITS
-
-void tickIsr()
-{
-	// for looping the wave
-	if((lut_i_A >> INTEGER_BITS) >= LUT_SIZE)
-	{
-		lut_i_A = lut_i_A % (LUT_SIZE << INTEGER_BITS);
-		currentCycles_A++;
-	}
-	
-	if( (lut_i_B >> INTEGER_BITS) >= LUT_SIZE)
-	{
-		lut_i_B = lut_i_B % (LUT_SIZE << INTEGER_BITS);
-		currentCycles_B++;
-	}
-	
-	// if cycles hit the set limit, stop
-	// ignore if the maxCycles value set to -1
-	if(currentCycles_A == maxCycles_A && maxCycles_A != -1)
-		outA_EN = false;
-	if(currentCycles_B == maxCycles_B && maxCycles_B != -1)
-		outB_EN = false;
-	
-	// writing each value to SPI
-	if(outA_EN)
-	{
-		writeSpi1Data( 0x3000 | lutA[lut_i_A >> INTEGER_BITS] );
-		latchDAC();
-		lut_i_A += phaseAccum_A;
-	}
-	
-	if(outB_EN)
-	{
-		writeSpi1Data( 0xB000 | lutB[lut_i_B >> INTEGER_BITS] );
-		latchDAC();
-		lut_i_B += phaseAccum_B;
-	}
-	
-    TIMER4_ICR_R = TIMER_ICR_TATOCINT;
-}
-
-void timer2tick()
-{
-	setPinValue(GREEN_LED, !getPinValue(GREEN_LED) );
-	
-	testAdc();
-	
-	TIMER2_ICR_R = TIMER_ICR_TATOCINT;
-}
-
 uint32_t float2uint(float input)
 {
 	uint8_t i;
@@ -478,15 +445,129 @@ uint32_t float2uint(float input)
 	return returnValue;
 }
 
-void testAdc()
+float dbArray[20];
+
+void freqSweep(float freqFrom, float freqTo)
 {
-	uint16_t adcValue3, adcValue2;
-	char buffer[20];
+	float freq_ref = (((float)40e6 / (float)TIMER4_TAILR_R)) * (1.0 / (float)LUT_SIZE);
+	float freqTable[21];
+	float decades = log10(freqTo / freqFrom);
+	float steps = 20.0 / decades;
+	float stepSize = pow(10, (1/steps)) - 1;
 	
-	adcValue3 = readAdc0Ss3();
-	adcValue2 = readAdc0Ss2();
-	sprintf(buffer, "SS3: %d\tSS2: %d\n", adcValue3, adcValue2);
+	uint32_t rawA = 0, rawB = 0;
+	uint8_t i;
+	uint16_t counter;
+	
+	char buffer[50];
+	
+	for(i = 0; i < 20; i++)
+	{
+		//freqTable[i] = (freqFrom + freqFrom * stepSize * i);
+		freqTable[i] = freqFrom;
+		freqFrom += (freqFrom * stepSize);
+	}
+	freqTable[i] = freqTo;
+	
+	for(i = 0; i < 21; i++)
+	{
+		phaseAccum_A = float2uint(freqTable[i] / freq_ref);
+		phaseAccum_B = phaseAccum_A;
+		
+		maxCycles_A = maxCycles_B = 200;
+		
+		currentCycles_A = 0;
+		currentCycles_B = 0;
+		lut_i_A = 0;
+		lut_i_B = 0;
+		outA_EN = outB_EN = true;
+		while(outA_EN || outB_EN)
+		{
+			rawA += readAdc0Ss2();
+			rawB += readAdc0Ss3();
+			counter++;
+		}
+		//waitMicrosecond(3000000);
+		outA_EN = false;
+		outB_EN = false;
+		
+		rawA /= counter;
+		rawB /= counter;
+		
+		//sprintf(buffer, "A: %d\tB: %d\n", rawA, rawB);
+		putsUart0(buffer);	
+		
+		dbArray[i] = 20 * log10((float)rawA / (float)rawB);
+	}
+	outA_EN = outB_EN = false;
+	
+	
+	
+	for(i = 0; i < 21; i++)
+	{
+		sprintf(buffer, "%f\n", freqTable[i]);
+		putsUart0(buffer);
+	}
+	for(i = 0; i < 21; i++)
+	{
+		sprintf(buffer, "%f\n", dbArray[i]);
+		putsUart0(buffer);
+	}
+}
+
+void tickIsr()
+{
+	// for looping the wave
+	if((lut_i_A >> INTEGER_BITS) >= LUT_SIZE)
+	{
+		lut_i_A = lut_i_A % (LUT_SIZE << INTEGER_BITS);
+		currentCycles_A++;
+	}
+	
+	if((lut_i_B >> INTEGER_BITS) >= LUT_SIZE)
+	{
+		lut_i_B = lut_i_B % (LUT_SIZE << INTEGER_BITS);
+		currentCycles_B++;
+	}
+	
+	// if cycles hit the set limit, stop
+	// ignore if the maxCycles value set to -1
+	if(currentCycles_A == maxCycles_A && maxCycles_A != -1)
+		outA_EN = false;
+	if(currentCycles_B == maxCycles_B && maxCycles_B != -1)
+		outB_EN = false;
+	
+	/*if(hilbertFlag && outA_EN && outB_EN)
+		init
+			lut_i_B = (LUT_SIZE/4) << INTEGER_BITS; // starts at 90 degrees
+	*/
+	
+	// writing each value to SPI
+	if(outA_EN)
+	{
+		writeSpi1Data( 0x3000 | lutA[lut_i_A >> INTEGER_BITS] );
+		latchDAC();
+		lut_i_A += phaseAccum_A;
+	}
+	
+	if(outB_EN)
+	{
+		writeSpi1Data( 0xB000 | lutB[lut_i_B >> INTEGER_BITS] );
+		latchDAC();
+		lut_i_B += phaseAccum_B;
+	}
+	
+    TIMER4_ICR_R = TIMER_ICR_TATOCINT;
+}
+
+void timer2tick()
+{
+	// prints out SS3 and SS2 value
+	char buffer[20];
+	sprintf(buffer, "1: %u\t2: %u\n", readAdc0Ss3(), readAdc0Ss2());
 	putsUart0(buffer);
+	
+	TIMER2_ICR_R = TIMER_ICR_TATOCINT;
 }
 
 
@@ -519,6 +600,11 @@ int main(void)
 	uint8_t dutyCycle = 50;
 	float freq_ref = (((float)40e6 / (float)TIMER4_TAILR_R)) * (1.0 / (float)LUT_SIZE);
 	int32_t testValue = 0;
+	float adcValue3, adcValue2;
+	uint16_t i;
+	
+	selectOutputVoltage(DAC_A, 0);
+	selectOutputVoltage(DAC_B, 0);
 
 	/* calculateWave(SINE, DAC_A, 1, 0);
 	freq = 20000;
@@ -628,8 +714,9 @@ int main(void)
 		/*  ======================= *
          *  ||||| C Y C L E S ||||| *
          *  ======================= */
-        else if( isCommand(&data, "cycles", 1) )
+        else if( isCommand(&data, "cycles", 2) )
         {
+			
 			if(data.fieldType[1] == 'n')
 			{
 				maxCycles_A = getFieldInteger(&data, 1);
@@ -644,7 +731,6 @@ int main(void)
 			{
 				putsUart0("ERROR: Invalid command for 'cycles'.");
 			}
-
         }
 		
 		/*  ======================= *
@@ -793,9 +879,11 @@ int main(void)
         {
             if( strcomp(getFieldString(&data, 1), "DAC") )
             {
-                putsUart0("Testing DAC Voltages...");
+                putsUart0("Testing DAC Voltages...\n");
 				
 				testValue = 0xFFF;
+				sprintf(buffer, "test value: %x\n", testValue);
+				putsUart0(buffer);
 				setPinValue(RED_LED, 1);
 				setPinValue(BLUE_LED, 1);
 				writeSpi1Data(0x3000 | testValue);
@@ -805,6 +893,8 @@ int main(void)
 				
 				for(testValue = 0xF00; testValue >= 0; testValue -= 0x100)
 				{
+					sprintf(buffer, "test value: %x\n", testValue);
+					putsUart0(buffer);
 					setPinValue(RED_LED, !getPinValue(RED_LED) );
 					setPinValue(BLUE_LED, !getPinValue(BLUE_LED) );
 					writeSpi1Data(0x3000 | testValue);
@@ -817,13 +907,6 @@ int main(void)
 				setPinValue(BLUE_LED, 0);
 				
             }
-			else if( strcomp(getFieldString(&data, 1), "value") )
-			{
-				// 0x7AE
-				writeSpi1Data(0x37E1);
-                writeSpi1Data(0xB7F3);
-				latchDAC();
-			}
 			else if( strcomp(getFieldString(&data, 1), "adc" ) )
 			{
 				if( strcomp(getFieldString(&data, 2), "ON" ) )
@@ -855,6 +938,66 @@ int main(void)
 			else
 				putsUart0("ERROR: Invalid command for 'differential'.\n");
         }
+		
+		/*  =============================== *
+         *  |||||||| H I L B E R T |||||||| *
+         *  =============================== */
+        else if( isCommand(&data, "hilbert", 1) )
+        {
+            if( strcomp(getFieldString(&data, 1), "ON") )
+			{
+				hilbertEN = true;
+				lut_i_B = (LUT_SIZE/4) << INTEGER_BITS;
+			}
+			else if( strcomp(getFieldString(&data, 1), "OFF") )
+				hilbertEN = false;
+			else
+				putsUart0("ERROR: Invalid command for 'hilbert'.\n");
+        }
+		
+		/*  =============================== *
+         *  |||||||||| L E V E L |||||||||| *
+         *  =============================== */
+        else if( isCommand(&data, "level", 1) )
+        {
+			// output DC voltage
+			// see what input is
+			// find percent drop across the load
+			// add (1.00 + percentage) * voltage difference to get new output voltage
+            if( strcomp(getFieldString(&data, 1), "ON") )
+			{
+				
+			}
+			else if( strcomp(getFieldString(&data, 1), "OFF") )
+			{
+				
+			}
+			else
+				putsUart0("ERROR: Invalid command for 'level'.\n");
+        }
+		
+		/*  =============================== *
+         *  ||||||||||| G A I N ||||||||||| *
+         *  =============================== */
+        else if( isCommand(&data, "gain", 1) )
+        {
+			// create freq array of requested range (log)
+			// output sine wave at freq...
+			//...wait for a second, measure voltage value for each channel
+			// calculate gain from both channels
+			// create table, graph gain plot
+			
+			outA_EN = false;
+			outB_EN = false;
+			TIMER4_CTL_R |= TIMER_CTL_TAEN;
+			calculateWave(SINE, DAC_A, 2, 0, dutyCycle);
+			for(i = 0; i < LUT_SIZE; i++)
+				lutB[i] = lutA[i];
+			
+			freqSweep(getFieldFloat(&data, 1), getFieldFloat(&data, 2) );
+			
+			//putsUart0("ERROR: Invalid command for 'gain'.\n");
+        }
 
         /*  =============================== *
          *  ||||||||| R E S E T ||||||||||| *
@@ -871,7 +1014,20 @@ int main(void)
         {
             dac = (DAC)getFieldInteger(&data, 1);
 			
-			testAdc();
+			// multiply this value by .8 mV | .0008
+			if(dac == DAC_A)
+			{
+				adcValue3 = (float)readAdc0Ss3() * 3.3 / 4095.0;
+				sprintf(buffer, "SS3: %f V\n", adcValue3);
+				putsUart0(buffer);
+			}
+			
+			if(dac == DAC_B)
+			{
+				adcValue2 = (float)readAdc0Ss2() * 3.3 / 4095.0;
+				sprintf(buffer, "SS2: %f V\n", adcValue2);
+				putsUart0(buffer);
+			}
         }
 
         /*  ============================= *
@@ -885,7 +1041,7 @@ int main(void)
             putsUart0("sine OUT, FREQ, AMP, [OFS]\n");
 			putsUart0("square OUT, FREQ, AMP, [OFS]\n");
 			putsUart0("sawtooth OUT, FREQ, AMP, [OFS]\n");
-			putsUart0("UNTESTED: triangle OUT, FREQ, AMP, [OFS]\n");
+			putsUart0("triangle OUT, FREQ, AMP, [OFS]\n");
         }
         else
         {
